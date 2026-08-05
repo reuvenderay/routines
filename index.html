@@ -242,9 +242,13 @@
       <span>Finished on time / early</span>
       <textarea id="fWin"></textarea>
     </label>
-    <label class="fld" style="margin:0">
+    <label class="fld">
       <span>Went over the total time</span>
       <textarea id="fOver"></textarea>
+    </label>
+    <label class="fld" style="margin:0">
+      <span>When the play time runs out</span>
+      <textarea id="fPlayOver"></textarea>
     </label>
   </div>
 
@@ -402,6 +406,7 @@ function saveRaw(str){
    ========================================================= */
 const DEF_WIN  = "Good job! You finished in {time}. You now have {play} to play.";
 const DEF_OVER = "You finished in {time}. That's {over} over. No play time this round — let's beat it tomorrow.";
+const DEF_PLAYOVER = "Play time is over. Nice job today!";
 
 function uid(){ return Math.random().toString(36).slice(2,9); }
 
@@ -409,6 +414,7 @@ function makeBedtime(){
   return { id:uid(), emoji:"🌙", name:"A Z Bedtime", total:1200, next:"",
     win:"Good job! You finished in {time}. You now have {play} to play. Good night Avraham Zussya!",
     over:DEF_OVER,
+    playOver:"Play time is over. Into bed now — good night!",
     tasks:[
       {id:uid(), msg:"Red Zush Tush, please clear your place at the table", secs:60},
       {id:uid(), msg:"Reb Zooshie, it's time to say Shema", secs:75},
@@ -424,6 +430,7 @@ function makeShower(){
   return { id:uid(), emoji:"🚿", name:"Kids Shower 1", total:1500, next:"",
     win:"Good job! You finished in {time}. Ok kinder blobs, it's time to get ready for bed.",
     over:"You finished in {time}. That's {over} over. Ok kinder blobs, it's time to get ready for bed.",
+    playOver:"Play time is over. Ok kinder blobs, time to get ready for bed.",
     tasks:[
       {id:uid(), msg:"First get your pajamas for after the bath and bring it to the bathroom. Then get undressed.", secs:180},
       {id:uid(), msg:"Hop in, get used to the water", secs:120},
@@ -480,6 +487,7 @@ function load(){
       db.routines.forEach(r=>{
         r.id = r.id||uid(); r.emoji = r.emoji||"⏱"; r.name = r.name||"Routine";
         r.total = num(r.total, 600); r.win = r.win||DEF_WIN; r.over = r.over||DEF_OVER;
+        r.playOver = r.playOver || DEF_PLAYOVER;
         r.next = r.next || "";
         r.tasks = (r.tasks||[]).map(t=>({id:t.id||uid(), msg:t.msg||"", secs:num(t.secs,60)}));
       });
@@ -647,10 +655,15 @@ function adopt(p){
   db.meta.dirty = false;
   db.routines.forEach(r=>{
     r.id = r.id||uid(); r.emoji = r.emoji||"⏱"; r.name = r.name||"Routine";
-    r.total = num(r.total, 600); r.win = r.win||DEF_WIN; r.over = r.over||DEF_OVER; r.next = r.next||"";
+    r.total = num(r.total, 600); r.win = r.win||DEF_WIN; r.over = r.over||DEF_OVER;
+    r.playOver = r.playOver || DEF_PLAYOVER; r.next = r.next||"";
     r.tasks = (r.tasks||[]).map(t=>({id:t.id||uid(), msg:t.msg||"", secs:num(t.secs,60)}));
   });
   save(); renderHome(); renderBanners();
+  /* if we're sitting on a deep-link screen, refresh it against the new data */
+  if(!$("#launch").classList.contains("hide")){
+    if(typeof renderLaunch === "function" && !renderLaunch()){ show("home"); }
+  }
 }
 function markDirty(){
   if(!db.meta.dirty){ db.meta.dirty = true; save(); }
@@ -865,6 +878,7 @@ function openEdit(id){
   $("#fTotSec").value = r.total%60;
   $("#fWin").value  = r.win;
   $("#fOver").value = r.over;
+  $("#fPlayOver").value = r.playOver;
   $("#fNext").innerHTML = '<option value="">Nothing — just finish</option>' +
     db.routines.filter(x=>x.id!==r.id)
       .map(x=>'<option value="'+x.id+'">'+esc(x.emoji+" "+x.name)+'</option>').join("");
@@ -954,6 +968,7 @@ $("#btnCopyLink").onclick = ()=>{
 $("#btnOpenLink").onclick = ()=>{ location.href = $("#fLink").value; };
 bindField("#fWin",   r=>{ r.win   = $("#fWin").value; });
 bindField("#fOver",  r=>{ r.over  = $("#fOver").value; });
+bindField("#fPlayOver", r=>{ r.playOver = $("#fPlayOver").value; });
 $("#fNext").addEventListener("change", ()=>{ const r=cur(); if(!r) return; r.next = $("#fNext").value; saveEdit(); });
 ["#fTotMin","#fTotSec"].forEach(s=> $(s).addEventListener("input", ()=>{
   const r = cur(); if(!r) return;
@@ -970,7 +985,7 @@ $("#btnDel").onclick = ()=>{
   saveEdit(); renderHome(); show("home");
 };
 $("#btnNew").onclick = ()=>{
-  const r = { id:uid(), emoji:"⏱", name:"New routine", total:600, win:DEF_WIN, over:DEF_OVER,
+  const r = { id:uid(), emoji:"⏱", name:"New routine", total:600, win:DEF_WIN, over:DEF_OVER, playOver:DEF_PLAYOVER,
               tasks:[{id:uid(), msg:"First thing to do", secs:120}] };
   db.routines.push(r); saveEdit(); openEdit(r.id);
 };
@@ -1114,15 +1129,16 @@ function fill(tpl, took, play, over){
     .replace(/\{name\}/g, run.r ? run.r.name : "");
 }
 /* ---- play-time countdown on the finish screen ---- */
-const play = { t:null, endAt:0, paused:false, left:0 };
+const play = { t:null, endAt:0, paused:false, left:0, r:null, took:0, granted:0 };
 function stopPlay(){
   if(play.t){ clearInterval(play.t); play.t = null; }
   play.paused = false;
   $("#btnPlayCtl").classList.add("hide");
 }
-function startPlay(secs){
+function startPlay(secs, routine, took){
   stopPlay();
   if(secs < 1) return;
+  play.r = routine; play.took = took; play.granted = secs;
   play.endAt = now() + secs;
   play.paused = false;
   const btn = $("#btnPlayCtl");
@@ -1144,8 +1160,10 @@ function startPlay(secs){
       $("#finPlay").textContent = "0:00";
       $("#finPlay").style.color = "var(--warn)";
       $("#finPlayLbl").textContent = "Play time is over";
+      const msg = fill(play.r ? play.r.playOver : DEF_PLAYOVER, play.took, play.granted, 0);
+      $("#finNote").textContent = msg;
       ping(); buzz([40,60,40]);
-      if(db.settings.speakFinish) setTimeout(()=>say("Play time is over."), 300);
+      if(db.settings.speakFinish) setTimeout(()=>say(msg), 300);
       return;
     }
     $("#finPlay").textContent = clock(left);
@@ -1184,7 +1202,7 @@ function finishRun(){
   if(db.settings.speakFinish) setTimeout(()=>say(line), won ? 520 : 300);
 
   stopPlay();
-  if(won) startPlay(early);          // the earned time now actually counts down
+  if(won) startPlay(early, r, took); // the earned time now actually counts down
 }
 $("#btnFinHome").onclick = ()=>{ stopPlay(); renderHome(); show("home"); };
 $("#btnFinAgain").onclick = ()=>{ if(run.r) startRun(run.r.id); };
@@ -1314,18 +1332,27 @@ document.addEventListener("visibilitychange", ()=>{
 window.addEventListener("online", ()=>{ if(cloud.on){ if(db.meta.dirty) cloudPush(); else cloudPull(); } });
 
 $("#btnLaunchHome").onclick = ()=>{ renderHome(); show("home"); };
-const deep = findByParam();
-if(deep){
-  document.title = deep.name;
-  $("#lEmoji").textContent = deep.emoji || "⏱";
-  $("#lName").textContent  = deep.name;
-  $("#lMeta").textContent  = deep.tasks.length + " task" + (deep.tasks.length===1?"":"s") +
-                             " · " + clock(deep.total) + " to beat";
-  $("#btnLaunch").onclick  = ()=> startRun(deep.id);
-  show("launch");
-} else {
-  show("home");
+
+/* The routine is looked up fresh every time — never captured once at load.
+   A cloud sync swaps the whole routine list for new objects with new ids,
+   so anything holding an id from before the sync would point at nothing. */
+function renderLaunch(){
+  const r = findByParam();
+  if(!r) return false;
+  document.title = r.name;
+  $("#lEmoji").textContent = r.emoji || "⏱";
+  $("#lName").textContent  = r.name;
+  $("#lMeta").textContent  = r.tasks.length + " task" + (r.tasks.length===1?"":"s") +
+                             " · " + clock(r.total) + " to beat";
+  return true;
 }
+$("#btnLaunch").onclick = ()=>{
+  const r = findByParam();                       // resolve at tap time, by name
+  if(r) return startRun(r.id);
+  renderHome(); show("home");
+  toast("That routine was renamed — pick it here");
+};
+if(renderLaunch()) show("launch"); else show("home");
 window.addEventListener("beforeunload", e=>{ if(run.active){ e.preventDefault(); e.returnValue = ""; } });
 </script>
 </body>
