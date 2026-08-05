@@ -146,6 +146,12 @@
   .sw::after{content:""; position:absolute; top:3px; left:3px; width:24px; height:24px; border-radius:50%; background:#fff; transition:transform .15s}
   .sw.on{background:var(--good)}
   .sw.on::after{transform:translateX(20px)}
+  .syncpill{font-size:11.5px; color:var(--dim); border:1px solid var(--line); border-radius:999px; padding:4px 10px; white-space:nowrap}
+  .syncpill.bad{color:var(--warn); border-color:var(--warn)}
+  .banner{background:var(--card2); border:1px solid var(--accent); border-radius:15px; padding:13px; margin-bottom:11px}
+  .banner.draft{border-color:var(--warn)}
+  .banner .bt{font-weight:700; font-size:15px; margin-bottom:3px}
+  .banner .bs{color:var(--dim); font-size:13px}
   .toast{position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:var(--card2); border:1px solid var(--line); padding:10px 16px; border-radius:99px; font-size:14px; z-index:99; opacity:0; pointer-events:none; transition:opacity .2s}
   .toast.show{opacity:1}
   .hintline{font-size:12.5px; color:var(--dim); margin:-4px 0 12px}
@@ -161,8 +167,26 @@
       <p class="sub" id="homeSub">Tap a routine to run it.</p>
     </div>
     <div class="spacer"></div>
+    <span class="syncpill hide" id="syncPill"></span>
     <button class="iconbtn" id="btnSettings" title="Settings">⚙︎</button>
   </div>
+
+  <div class="banner hide" id="updBanner">
+    <div class="bt">A newer set was published</div>
+    <div class="bs" id="updSub"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm primary" id="btnUpdTake">Update</button>
+      <button class="btn sm" id="btnUpdKeep">Keep mine</button>
+    </div>
+  </div>
+  <div class="banner draft hide" id="pubBanner">
+    <div class="bt">You have unpublished changes</div>
+    <div class="bs">These edits are only on this device. Publish to push them to your other phones.</div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn sm primary" id="btnPublish">Publish</button>
+    </div>
+  </div>
+
   <div id="routineList"></div>
   <div class="fab"><div class="inner">
     <button class="btn primary wide" id="btnNew">+ New routine</button>
@@ -224,10 +248,32 @@
     </label>
   </div>
 
+  <h2>Home screen icon</h2>
+  <p class="hintline">This link opens straight into this one routine. On your iPhone open it in Safari, then Share → Add to Home Screen.</p>
+  <div class="card">
+    <input type="text" id="fLink" readonly style="font-size:13px">
+    <div style="height:9px"></div>
+    <div class="row wrap-r">
+      <button class="btn sm" id="btnCopyLink">Copy link</button>
+      <button class="btn sm" id="btnOpenLink">Open it</button>
+    </div>
+  </div>
+
   <div class="fab"><div class="inner">
     <button class="btn wide" id="btnEditDone">Done editing</button>
     <button class="btn primary wide" id="btnRunFromEdit">▶ Run</button>
   </div></div>
+</div>
+
+<!-- ============ LAUNCH (deep link) ============ -->
+<div id="launch" class="hide">
+  <div class="fin">
+    <div class="big" id="lEmoji">⏱</div>
+    <h2 id="lName">Routine</h2>
+    <p id="lMeta"></p>
+    <button class="bigdone" id="btnLaunch" style="max-width:340px">▶ Start</button>
+    <button class="btn ghost sm" id="btnLaunchHome">All routines</button>
+  </div>
 </div>
 
 <!-- ============ RUN ============ -->
@@ -279,6 +325,8 @@
       <div class="stat" id="finTime">0:00</div>
       <div class="lbl" id="finPlayLbl" style="margin-top:14px">Play time earned</div>
       <div class="stat" id="finPlay" style="color:var(--good)">0:00</div>
+      <div style="height:10px"></div>
+      <button class="btn sm hide" id="btnPlayCtl">⏸ Pause</button>
     </div>
     <p id="finNote"></p>
     <button class="bigdone hide" id="btnFinNext" style="max-width:340px">▶ Start next</button>
@@ -315,7 +363,12 @@
   <h2>Backup</h2>
   <div class="card">
     <p class="sub" style="margin:0 0 12px">Your routines live in this browser. Export a copy before clearing browser data or moving to a new phone.</p>
+    <div class="row wrap-r hide" id="cloudRow" style="margin-bottom:10px">
+      <button class="btn sm primary" id="btnPullNow">Check for updates</button>
+      <button class="btn sm" id="btnPushNow">Force send mine</button>
+    </div>
     <div class="row wrap-r">
+      <button class="btn sm primary" id="btnPublish2">Publish to repo</button>
       <button class="btn sm" id="btnExport">Export backup</button>
       <button class="btn sm" id="btnImport">Import backup</button>
       <button class="btn sm danger" id="btnReset">Reset to samples</button>
@@ -439,7 +492,191 @@ function load(){
   save();
 }
 function save(){ saveRaw(JSON.stringify(db)); }
+/* every routine edit goes through this so the publish banner stays honest */
+function saveEdit(){ save(); markDirty(); }
 function num(v,d){ v = parseInt(v,10); return (isFinite(v) && v>=0) ? v : d; }
+
+/* =========================================================
+   SYNC — routines.json in the same folder is the master copy
+   =========================================================
+   Load order: published file (if newer) -> this device's saved copy
+               -> the samples baked into this file.
+   Nothing is ever overwritten without the user tapping Update. */
+const PUB_FILE = "routines.json";
+const CFG_FILE = "sync-config.json";
+let pending = null;                       // a newer published set awaiting a decision
+
+/* ---- cloud sync (Firebase Realtime Database, plain REST — no SDK) ----
+   Config lives in sync-config.json in the repo, so every device picks it up.
+   If the file is missing or unreachable we fall back to the routines.json
+   + Publish flow, and if that's gone too, to the samples in this file.      */
+const cloud = { on:false, url:"", path:"", pushT:null, state:"off" };
+
+function cloudEndpoint(){
+  return cloud.url.replace(/\/+$/,"") + "/" + cloud.path.replace(/^\/+|\/+$/g,"") + ".json";
+}
+function setSync(state, note){
+  cloud.state = state;
+  const el = $("#syncPill");
+  if(!el) return;
+  const label = {off:"", syncing:"Syncing…", ok:"Synced", error:"Offline — saved here"}[state] || "";
+  el.textContent = label;
+  el.classList.toggle("hide", !label);
+  el.classList.toggle("bad", state === "error");
+  if(note) el.title = note;
+}
+async function loadSyncConfig(){
+  try{
+    const base = location.pathname.replace(/[^/]*$/, "");
+    const res = await fetch(base + CFG_FILE + "?t=" + Math.floor(Date.now()/60000), {cache:"no-store"});
+    if(!res.ok) return false;
+    const c = await res.json();
+    if(!c || !c.databaseURL) return false;
+    cloud.url  = String(c.databaseURL);
+    cloud.path = String(c.path || "routines");
+    cloud.on   = true;
+    return true;
+  }catch(e){ return false; }
+}
+async function cloudGet(){
+  const res = await fetch(cloudEndpoint() + "?t=" + Date.now(), {cache:"no-store"});
+  if(!res.ok) throw new Error("read failed " + res.status);
+  const v = await res.json();
+  return (v && Array.isArray(v.routines)) ? v : null;
+}
+async function cloudPut(payload){
+  const res = await fetch(cloudEndpoint(), {
+    method:"PUT", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(payload)
+  });
+  if(!res.ok) throw new Error("write failed " + res.status);
+}
+
+/* pull whatever is in the cloud; ask before trampling unpushed local edits */
+async function cloudPull(){
+  if(!cloud.on) return;
+  setSync("syncing");
+  let remote;
+  try{ remote = await cloudGet(); }
+  catch(e){ setSync("error", String(e.message||e)); return; }
+
+  if(!remote){                                  // empty database — seed it from this device
+    try{
+      await cloudPut({version:1, routines:db.routines});
+      db.meta.cloudVersion = 1; db.meta.dirty = false; save();
+      setSync("ok"); renderBanners();
+    }catch(e){ setSync("error"); }
+    return;
+  }
+  const theirs = num(remote.version,0), mine = num(db.meta.cloudVersion,0);
+  if(theirs > mine){
+    if(db.meta.dirty){
+      pending = remote;
+      $("#updSub").textContent = "Another device saved version " + theirs +
+        ". You have changes here that haven't gone up yet.";
+      $("#updBanner").classList.remove("hide");
+    } else {
+      adopt(remote); db.meta.cloudVersion = theirs; save();
+    }
+  }
+  setSync("ok"); renderBanners();
+}
+
+/* every edit schedules a push; last edit within the window wins */
+function schedulePush(){
+  if(!cloud.on) return;
+  clearTimeout(cloud.pushT);
+  setSync("syncing");
+  cloud.pushT = setTimeout(cloudPush, 1500);
+}
+async function cloudPush(){
+  if(!cloud.on || !db.meta.dirty) return;
+  let remote = null;
+  try{ remote = await cloudGet(); }
+  catch(e){ setSync("error"); return; }        // stays dirty, retries on next edit or reopen
+
+  const theirs = remote ? num(remote.version,0) : 0;
+  if(theirs > num(db.meta.cloudVersion,0)){    // someone else got there first
+    pending = remote;
+    $("#updSub").textContent = "Another device saved version " + theirs +
+      " while you were editing.";
+    $("#updBanner").classList.remove("hide");
+    renderBanners();
+    setSync("ok");
+    return;
+  }
+  const next = theirs + 1;
+  try{
+    await cloudPut({version:next, routines:db.routines});
+    db.meta.cloudVersion = next; db.meta.dirty = false; save();
+    setSync("ok"); renderBanners();
+  }catch(e){ setSync("error"); }
+}
+
+function pubUrl(){
+  const p = location.pathname.replace(/[^/]*$/, "");
+  return p + PUB_FILE + "?t=" + Math.floor(Date.now()/60000);   // cache-bust per minute
+}
+
+async function checkPublished(){
+  let res;
+  try{
+    res = await fetch(pubUrl(), {cache:"no-store"});
+    if(!res.ok) throw 0;
+  }catch(e){ return; }                    // offline or no file — stay on local copy
+  let p;
+  try{ p = await res.json(); }catch(e){ return; }
+  if(!p || !Array.isArray(p.routines)) return;
+
+  const theirs = num(p.version, 0), mine = num(db.meta.pubVersion, 0);
+  if(theirs <= mine) return;              // already have it
+
+  if(db.meta.dirty){                      // local edits at risk — ask
+    pending = p;
+    $("#updSub").textContent = "Version " + theirs + " has " + p.routines.length +
+      " routine" + (p.routines.length===1?"":"s") + ". You have unpublished changes on this device.";
+    $("#updBanner").classList.remove("hide");
+  } else {
+    adopt(p);                             // clean device — just take it
+    toast("Updated to version " + theirs);
+  }
+}
+function adopt(p){
+  db.routines = p.routines;
+  db.meta.pubVersion = num(p.version, 0);
+  db.meta.dirty = false;
+  db.routines.forEach(r=>{
+    r.id = r.id||uid(); r.emoji = r.emoji||"⏱"; r.name = r.name||"Routine";
+    r.total = num(r.total, 600); r.win = r.win||DEF_WIN; r.over = r.over||DEF_OVER; r.next = r.next||"";
+    r.tasks = (r.tasks||[]).map(t=>({id:t.id||uid(), msg:t.msg||"", secs:num(t.secs,60)}));
+  });
+  save(); renderHome(); renderBanners();
+}
+function markDirty(){
+  if(!db.meta.dirty){ db.meta.dirty = true; save(); }
+  renderBanners();
+  schedulePush();
+}
+function renderBanners(){
+  /* with cloud sync on there's nothing to publish by hand */
+  $("#pubBanner").classList.toggle("hide", cloud.on || !db.meta.dirty || !!pending);
+  if(!pending) $("#updBanner").classList.add("hide");
+}
+function publish(){
+  const out = {
+    version: num(db.meta.pubVersion, 0) + 1,
+    routines: db.routines
+  };
+  const blob = new Blob([JSON.stringify(out,null,2)], {type:"application/json"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = PUB_FILE;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  db.meta.pubVersion = out.version;
+  db.meta.dirty = false;
+  save(); renderBanners();
+  toast("Version " + out.version + " downloaded — upload it to your repo");
+}
 
 /* =========================================================
    HELPERS
@@ -465,10 +702,33 @@ function toast(msg){
   clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove("show"), 1900);
 }
 function show(id){
-  ["home","edit","run","finish","settings"].forEach(s=>{
+  ["home","edit","run","finish","settings","launch"].forEach(s=>{
     $("#"+s).classList.toggle("hide", s!==id);
   });
   window.scrollTo(0,0);
+}
+
+/* ---- deep links: one home-screen icon per routine ---- */
+function slug(s){
+  return String(s).toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"") || "routine";
+}
+function linkFor(r){
+  const base = location.origin && location.origin !== "null"
+    ? location.origin + location.pathname
+    : location.pathname;
+  return base + "?go=" + slug(r.name);
+}
+function findByParam(){
+  let q = "";
+  try{
+    q = new URLSearchParams(location.search).get("go") ||
+        new URLSearchParams(location.hash.replace(/^#\??/,"")).get("go") || "";
+  }catch(e){}
+  if(!q) return null;
+  q = slug(q);
+  return db.routines.find(r=>slug(r.name) === q) ||
+         db.routines.find(r=>r.id === q) || null;
 }
 
 /* =========================================================
@@ -586,7 +846,7 @@ function dupRoutine(id){
   copy.id = uid(); copy.name = r.name + " (copy)";
   copy.tasks.forEach(t=> t.id = uid());
   db.routines.splice(db.routines.indexOf(r)+1, 0, copy);
-  save(); renderHome(); toast("Duplicated — edit the copy");
+  saveEdit(); renderHome(); toast("Duplicated — edit the copy");
   return copy.id;
 }
 
@@ -609,6 +869,7 @@ function openEdit(id){
     db.routines.filter(x=>x.id!==r.id)
       .map(x=>'<option value="'+x.id+'">'+esc(x.emoji+" "+x.name)+'</option>').join("");
   $("#fNext").value = db.routines.some(x=>x.id===r.next) ? r.next : "";
+  $("#fLink").value = linkFor(r);
   renderTasks();
   show("edit");
 }
@@ -644,7 +905,7 @@ function renderSum(){
                : ' · <b>'+clock(-diff)+'</b> over — he can\'t finish in time')+
     '<span class="spacer"></span><button class="btn sm" id="btnUseSum">Match</button>';
   $("#btnUseSum").onclick = ()=>{
-    r.total = s; save();
+    r.total = s; saveEdit();
     $("#fTotMin").value = Math.floor(s/60); $("#fTotSec").value = s%60;
     renderSum(); toast("Total set to "+clock(s));
   };
@@ -659,7 +920,7 @@ $("#taskList").addEventListener("input", e=>{
     t.secs = num(mi.value,0)*60 + num(se.value,0);
     renderSum();
   }
-  save();
+  saveEdit();
 });
 $("#taskList").addEventListener("click", e=>{
   const btn = e.target.closest("[data-a]"); if(!btn) return;
@@ -669,26 +930,35 @@ $("#taskList").addEventListener("click", e=>{
   if(a==="up" && i>0){ const x=r.tasks.splice(i,1)[0]; r.tasks.splice(i-1,0,x); }
   if(a==="down" && i<r.tasks.length-1){ const x=r.tasks.splice(i,1)[0]; r.tasks.splice(i+1,0,x); }
   if(a==="del"){ r.tasks.splice(i,1); }
-  save(); renderTasks();
+  saveEdit(); renderTasks();
 });
 $("#btnAddTask").onclick = ()=>{
   const r = cur();
   r.tasks.push({id:uid(), msg:"", secs:60});
-  save(); renderTasks();
+  saveEdit(); renderTasks();
   const boxes = $$("#taskList .task");
   const last = boxes[boxes.length-1];
   if(last){ last.scrollIntoView({behavior:"smooth", block:"center"}); last.querySelector("textarea").focus(); }
 };
-function bindField(sel, fn){ $(sel).addEventListener("input", ()=>{ const r=cur(); if(!r) return; fn(r); save(); }); }
+function bindField(sel, fn){ $(sel).addEventListener("input", ()=>{ const r=cur(); if(!r) return; fn(r); saveEdit(); }); }
 bindField("#fEmoji", r=>{ r.emoji = $("#fEmoji").value.trim() || "⏱"; });
-bindField("#fName",  r=>{ r.name  = $("#fName").value; });
+bindField("#fName",  r=>{ r.name  = $("#fName").value; $("#fLink").value = linkFor(r); });
+$("#btnCopyLink").onclick = ()=>{
+  const el = $("#fLink");
+  el.select(); el.setSelectionRange(0, 99999);
+  const done = ()=> toast("Link copied");
+  if(navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(el.value).then(done, ()=>{ try{document.execCommand("copy"); done();}catch(e){ toast("Select and copy it"); } });
+  else { try{ document.execCommand("copy"); done(); }catch(e){ toast("Select and copy it"); } }
+};
+$("#btnOpenLink").onclick = ()=>{ location.href = $("#fLink").value; };
 bindField("#fWin",   r=>{ r.win   = $("#fWin").value; });
 bindField("#fOver",  r=>{ r.over  = $("#fOver").value; });
-$("#fNext").addEventListener("change", ()=>{ const r=cur(); if(!r) return; r.next = $("#fNext").value; save(); });
+$("#fNext").addEventListener("change", ()=>{ const r=cur(); if(!r) return; r.next = $("#fNext").value; saveEdit(); });
 ["#fTotMin","#fTotSec"].forEach(s=> $(s).addEventListener("input", ()=>{
   const r = cur(); if(!r) return;
   r.total = num($("#fTotMin").value,0)*60 + num($("#fTotSec").value,0);
-  save(); renderSum();
+  saveEdit(); renderSum();
 }));
 $("#btnEditBack").onclick = $("#btnEditDone").onclick = ()=>{ renderHome(); show("home"); };
 $("#btnRunFromEdit").onclick = ()=> startRun(editId);
@@ -697,12 +967,12 @@ $("#btnDel").onclick = ()=>{
   const r = cur();
   if(!confirm('Delete "'+r.name+'"? This cannot be undone.')) return;
   db.routines.splice(db.routines.indexOf(r),1);
-  save(); renderHome(); show("home");
+  saveEdit(); renderHome(); show("home");
 };
 $("#btnNew").onclick = ()=>{
   const r = { id:uid(), emoji:"⏱", name:"New routine", total:600, win:DEF_WIN, over:DEF_OVER,
               tasks:[{id:uid(), msg:"First thing to do", secs:120}] };
-  db.routines.push(r); save(); openEdit(r.id);
+  db.routines.push(r); saveEdit(); openEdit(r.id);
 };
 
 /* =========================================================
@@ -719,6 +989,7 @@ function startRun(id){
   const r = db.routines.find(x=>x.id===id);
   if(!r) return;
   if(!r.tasks.length){ toast("Add a task first"); return openEdit(id); }
+  stopPlay();
   audio();                                  // unlock audio on this user gesture
   run.active = true; run.r = r; run.i = 0;
   run.runStart = now(); run.pausedTotal = 0; run.paused = false; run.done = [];
@@ -842,6 +1113,45 @@ function fill(tpl, took, play, over){
     .replace(/\{over\}/g, words(over))
     .replace(/\{name\}/g, run.r ? run.r.name : "");
 }
+/* ---- play-time countdown on the finish screen ---- */
+const play = { t:null, endAt:0, paused:false, left:0 };
+function stopPlay(){
+  if(play.t){ clearInterval(play.t); play.t = null; }
+  play.paused = false;
+  $("#btnPlayCtl").classList.add("hide");
+}
+function startPlay(secs){
+  stopPlay();
+  if(secs < 1) return;
+  play.endAt = now() + secs;
+  play.paused = false;
+  const btn = $("#btnPlayCtl");
+  btn.classList.remove("hide");
+  btn.textContent = "⏸ Pause";
+  btn.onclick = ()=>{
+    if(play.paused){
+      play.endAt = now() + play.left; play.paused = false; btn.textContent = "⏸ Pause";
+    } else {
+      play.left = Math.max(0, play.endAt - now()); play.paused = true; btn.textContent = "▶ Resume";
+    }
+  };
+  $("#finPlayLbl").textContent = "Play time left";
+  play.t = setInterval(()=>{
+    if(play.paused) return;
+    const left = play.endAt - now();
+    if(left <= 0){
+      stopPlay();
+      $("#finPlay").textContent = "0:00";
+      $("#finPlay").style.color = "var(--warn)";
+      $("#finPlayLbl").textContent = "Play time is over";
+      ping(); buzz([40,60,40]);
+      if(db.settings.speakFinish) setTimeout(()=>say("Play time is over."), 300);
+      return;
+    }
+    $("#finPlay").textContent = clock(left);
+  }, 250);
+}
+
 function finishRun(){
   const r = run.r, took = elapsedRun();
   stopRun();
@@ -872,8 +1182,11 @@ function finishRun(){
   if(won) pingpong(); else ping();
   buzz(won ? [40,60,40] : 40);
   if(db.settings.speakFinish) setTimeout(()=>say(line), won ? 520 : 300);
+
+  stopPlay();
+  if(won) startPlay(early);          // the earned time now actually counts down
 }
-$("#btnFinHome").onclick = ()=>{ renderHome(); show("home"); };
+$("#btnFinHome").onclick = ()=>{ stopPlay(); renderHome(); show("home"); };
 $("#btnFinAgain").onclick = ()=>{ if(run.r) startRun(run.r.id); };
 
 /* =========================================================
@@ -905,12 +1218,48 @@ function applyTheme(){ document.documentElement.dataset.theme = db.settings.them
 $("#btnSettings").onclick = ()=>{
   renderToggles(); loadVoices();
   $("#rate").value = db.settings.rate; $("#rateVal").textContent = Number(db.settings.rate).toFixed(1);
-  $("#storeNote").textContent = storageOK
-    ? "Saved automatically in this browser."
-    : "⚠️ This browser is blocking storage, so changes will be lost when you close the tab. Open the file directly in Safari or Chrome, or export a backup.";
+  if(!storageOK){
+    $("#storeNote").textContent = "⚠️ This browser is blocking storage, so changes will be lost when you close the tab. Open the file directly in Safari or Chrome, or export a backup.";
+  } else if(cloud.on){
+    $("#storeNote").textContent = "☁️ Cloud sync is on. Version " + num(db.meta.cloudVersion,0) +
+      (db.meta.dirty ? " · changes here are waiting to go up." : " · this device is up to date.") +
+      " Every device with this link stays in step automatically.";
+  } else {
+    $("#storeNote").textContent = "Cloud sync is off (no sync-config.json found). Published version: " +
+      num(db.meta.pubVersion,0) + (db.meta.dirty ? " · unpublished changes on this device." : " · up to date.");
+  }
+  $("#cloudRow").classList.toggle("hide", !cloud.on);
   show("settings");
 };
 $("#btnSetBack").onclick = ()=>{ renderHome(); show("home"); };
+$("#btnUpdTake").onclick = ()=>{
+  if(!pending) return;
+  const p = pending; pending = null;
+  adopt(p);
+  if(cloud.on){ db.meta.cloudVersion = num(p.version,0); save(); setSync("ok"); }
+  toast("Updated to version " + p.version);
+};
+$("#btnUpdKeep").onclick = ()=>{
+  if(!pending) return;
+  const v = num(pending.version,0);
+  pending = null;
+  if(cloud.on){
+    db.meta.cloudVersion = v; save();          // our next push lands on top of theirs
+    renderBanners(); cloudPush(); toast("Keeping yours — sending it up");
+  } else {
+    db.meta.pubVersion = v; save(); renderBanners(); toast("Kept your version");
+  }
+};
+$("#btnPublish").onclick = publish;
+$("#btnPublish2").onclick = publish;
+$("#btnPullNow").onclick = ()=>{ cloudPull().then(()=>toast("Checked")); };
+$("#btnPushNow").onclick = ()=>{
+  db.meta.dirty = true; save();
+  cloudGet().then(r=>{
+    db.meta.cloudVersion = r ? num(r.version,0) : 0;   // deliberately overwrite whatever's up there
+    save(); return cloudPush();
+  }).then(()=>toast("Sent")).catch(()=>toast("Couldn't reach the cloud"));
+};
 $("#voiceSel").onchange = e=>{ db.settings.voiceURI = e.target.value; save(); };
 $("#rate").oninput = e=>{ db.settings.rate = parseFloat(e.target.value); $("#rateVal").textContent = db.settings.rate.toFixed(1); save(); };
 $("#btnTestVoice").onclick = ()=>{ audio(); ping(); setTimeout(()=>say("Good job! You finished in eighteen minutes. You now have two minutes to play."), 260); };
@@ -939,16 +1288,44 @@ $("#fileIn").onchange = e=>{
 };
 $("#btnReset").onclick = ()=>{
   if(!confirm("Replace everything with the sample routines?")) return;
-  db.routines = samples(); save(); renderHome(); toast("Reset");
+  db.routines = samples(); saveEdit(); renderHome(); toast("Reset");
 };
 
 /* =========================================================
    BOOT
    ========================================================= */
 load();
+if(!db.meta) db.meta = {};
 applyTheme();
 renderHome();
-show("home");
+renderBanners();
+
+(async function boot(){
+  const configured = await loadSyncConfig();
+  if(configured){ await cloudPull(); }
+  else { checkPublished(); }                  // fall back to the repo-file flow
+})();
+
+/* coming back to the app re-checks the cloud, so a phone left open overnight
+   doesn't run yesterday's routine */
+document.addEventListener("visibilitychange", ()=>{
+  if(document.visibilityState === "visible" && cloud.on && !run.active) cloudPull();
+});
+window.addEventListener("online", ()=>{ if(cloud.on){ if(db.meta.dirty) cloudPush(); else cloudPull(); } });
+
+$("#btnLaunchHome").onclick = ()=>{ renderHome(); show("home"); };
+const deep = findByParam();
+if(deep){
+  document.title = deep.name;
+  $("#lEmoji").textContent = deep.emoji || "⏱";
+  $("#lName").textContent  = deep.name;
+  $("#lMeta").textContent  = deep.tasks.length + " task" + (deep.tasks.length===1?"":"s") +
+                             " · " + clock(deep.total) + " to beat";
+  $("#btnLaunch").onclick  = ()=> startRun(deep.id);
+  show("launch");
+} else {
+  show("home");
+}
 window.addEventListener("beforeunload", e=>{ if(run.active){ e.preventDefault(); e.returnValue = ""; } });
 </script>
 </body>

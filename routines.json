@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "routines": [
+    {
+      "id": "r10",
+      "emoji": "🚿",
+      "name": "Kids Shower 1",
+      "total": 1500,
+      "next": "r1",
+      "win": "Good job! You finished in {time}. Ok kinder blobs, it's time to get ready for bed.",
+      "over": "You finished in {time}. That's {over} over. Ok kinder blobs, it's time to get ready for bed.",
+      "tasks": [
+        {
+          "id": "r11",
+          "msg": "First get your pajamas for after the bath and bring it to the bathroom. Then get undressed.",
+          "secs": 180
+        },
+        {
+          "id": "r12",
+          "msg": "Hop in, get used to the water",
+          "secs": 120
+        },
+        {
+          "id": "r13",
+          "msg": "Wet hair time! Time to wet your hair all the way down to the roots",
+          "secs": 60
+        },
+        {
+          "id": "r14",
+          "msg": "Shampoo time! Squeeze a quarter-size drop, scrub your whole scalp — front, sides, and back",
+          "secs": 120
+        },
+        {
+          "id": "r15",
+          "msg": "Rinse hair time! Rinse till it doesn't feel slippery anymore.",
+          "secs": 60
+        },
+        {
+          "id": "r16",
+          "msg": "Soap body time! Now wash your body — arms, legs, tummy, back, and don't forget your feet and behind your ears.",
+          "secs": 180
+        },
+        {
+          "id": "r17",
+          "msg": "Rinse body time! Rinse all the soap off — check your arms and legs for any bubbles left.",
+          "secs": 120
+        },
+        {
+          "id": "r18",
+          "msg": "Free play and soak time! Now you've got a few minutes to just play.",
+          "secs": 240
+        },
+        {
+          "id": "r19",
+          "msg": "Drain and final rinse time! Pull out the stopper and do one last rinse",
+          "secs": 60
+        },
+        {
+          "id": "r20",
+          "msg": "Time to hop out and dry off.",
+          "secs": 120
+        },
+        {
+          "id": "r21",
+          "msg": "Time to get dressed! Undies first, then pajamas — top, then bottoms.",
+          "secs": 230
+        }
+      ]
+    },
+    {
+      "id": "r1",
+      "emoji": "🌙",
+      "name": "A Z Bedtime",
+      "total": 1200,
+      "next": "",
+      "win": "Good job! You finished in {time}. You now have {play} to play. Good night Avraham Zussya!",
+      "over": "You finished in {time}. That's {over} over. No play time this round — let's beat it tomorrow.",
+      "tasks": [
+        {
+          "id": "r2",
+          "msg": "Red Zush Tush, please clear your place at the table",
+          "secs": 60
+        },
+        {
+          "id": "r3",
+          "msg": "Reb Zooshie, it's time to say Shema",
+          "secs": 75
+        },
+        {
+          "id": "r4",
+          "msg": "Zooshie smushy, it's time to make snacks",
+          "secs": 240
+        },
+        {
+          "id": "r5",
+          "msg": "Zoooo Shaw, it's time to brush your teeth",
+          "secs": 225
+        },
+        {
+          "id": "r6",
+          "msg": "Zushie splat, it's time to get negel vasser",
+          "secs": 75
+        },
+        {
+          "id": "r7",
+          "msg": "Zanzibar Zangvil, it's time to set out clothing",
+          "secs": 200
+        },
+        {
+          "id": "r8",
+          "msg": "Aivroham, it's time to get into pajamas",
+          "secs": 235
+        },
+        {
+          "id": "r9",
+          "msg": "Zushele the tushele, put your laundry in the hamper",
+          "secs": 60
+        }
+      ]
+    }
+  ]
+}

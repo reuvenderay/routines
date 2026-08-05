@@ -1,0 +1,5 @@
+{
+  "_readme": "Paste your Firebase Realtime Database URL below, then upload this file to your repo. Delete the file to turn cloud sync off and go back to the manual Publish flow.",
+  "databaseURL": "PASTE_YOUR_DATABASE_URL_HERE",
+  "path": "routines-3eb44e21ccb1"
+}
