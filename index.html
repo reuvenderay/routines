@@ -445,32 +445,57 @@ function makeShower(){
       {id:uid(), msg:"Time to get dressed! Undies first, then pajamas — top, then bottoms.", secs:230}
     ]};
 }
+function makeTRBedtime(){
+  return { id:uid(), emoji:"🌸", name:"TR Bedtime 1", total:1220, next:"",
+    win:"Good job! You finished in {time}. Talya Rivka, you still have {play} to play or finish up.",
+    over:"You finished in {time}. That's {over} over, so no play time tonight. Let's beat it tomorrow, Talya Rivka.",
+    playOver:"It's time to go to bed. Good night Talya Rivka, my lovely pie.",
+    tasks:[
+      {id:uid(), msg:"Talya Pumpernickle, please clear your place at the table", secs:70},
+      {id:uid(), msg:"Rebbitzin Talya, it's time to say Shema", secs:75},
+      {id:uid(), msg:"Talina yekatrivka, it's time to make snacks", secs:150},
+      {id:uid(), msg:"Taaaaaall yariv cow, it's time to brush your teeth", secs:150},
+      {id:uid(), msg:"Tal tal tally hose, it's time to get negel vasser", secs:75},
+      {id:uid(), msg:"Italia revenue, it's time to set out clothing", secs:100},
+      {id:uid(), msg:"Talayah riviera, it's time to get into pajamas", secs:150},
+      {id:uid(), msg:"Talyaleh the shmalyaleh, it's time to put your laundry in the hamper", secs:60}
+    ]};
+}
 function samples(){
-  const bed = makeBedtime(), sh = makeShower();
+  const bed = makeBedtime(), sh = makeShower(), tr = makeTRBedtime();
   sh.next = bed.id;                       // shower rolls straight into bedtime
-  return [sh, bed];
+  return [sh, bed, tr];
 }
 /* Adds newly-shipped sample routines to people who already have saved data,
    without touching anything they've edited. Runs once per seed key. */
 const SEEDS = [
-  { key:"kidsShower1", name:"Kids Shower 1", make:makeShower, chainToBedtime:true }
+  { key:"kidsShower1", name:"Kids Shower 1", make:makeShower, chainToBedtime:true },
+  { key:"trBedtime1",  name:"TR Bedtime 1",  make:makeTRBedtime }
 ];
+/* Saved data from before the ledger existed already received these. Without
+   this, a routine the user RENAMED would look missing and get re-added. */
+const LEGACY_SEEDS = ["kidsShower1"];
+/* IMPORTANT: this runs AFTER the cloud pull, never before.
+   Seeding first would add the routine locally, then the pull would replace the
+   whole list with the cloud's copy and the new routine would silently vanish. */
 function applySeeds(){
   if(!db.meta) db.meta = {};
   if(!Array.isArray(db.meta.seeds)) db.meta.seeds = [];
-  let changed = false;
+  let added = false, recorded = false;
   SEEDS.forEach(s=>{
     if(db.meta.seeds.indexOf(s.key) !== -1) return;
-    db.meta.seeds.push(s.key); changed = true;
+    db.meta.seeds.push(s.key); recorded = true;
     if(db.routines.some(r=>r.name.toLowerCase() === s.name.toLowerCase())) return;
     const r = s.make();
     if(s.chainToBedtime){
       const bed = db.routines.find(x=>/bedtime/i.test(x.name));
       if(bed) r.next = bed.id;
     }
-    db.routines.unshift(r);
+    db.routines.push(r);
+    added = true;
   });
-  if(changed) save();
+  if(added){ save(); renderHome(); markDirty(); }   // markDirty pushes it to the cloud
+  else if(recorded){ save(); }
 }
 
 const DEF_SETTINGS = { speakTask:true, speakFinish:true, ping:true, vibrate:true, theme:"dark", rate:1, voiceURI:"" };
@@ -491,12 +516,11 @@ function load(){
         r.next = r.next || "";
         r.tasks = (r.tasks||[]).map(t=>({id:t.id||uid(), msg:t.msg||"", secs:num(t.secs,60)}));
       });
-      applySeeds();
-      return;
+      return;                              // seeds are applied after the cloud pull
     }catch(e){ /* fall through */ }
   }
   db = { routines: samples(), settings: Object.assign({}, DEF_SETTINGS),
-         meta: { seeds: SEEDS.map(s=>s.key) } };
+         meta: { seeds: SEEDS.map(s=>s.key) } };   // fresh install already has them all
   save();
 }
 function save(){ saveRaw(JSON.stringify(db)); }
@@ -570,7 +594,7 @@ async function cloudPull(){
 
   if(!remote){                                  // empty database — seed it from this device
     try{
-      await cloudPut({version:1, routines:db.routines});
+      await cloudPut({version:1, routines:db.routines, seeds:db.meta.seeds||[]});
       db.meta.cloudVersion = 1; db.meta.dirty = false; save();
       setSync("ok"); renderBanners();
     }catch(e){ setSync("error"); }
@@ -615,7 +639,7 @@ async function cloudPush(){
   }
   const next = theirs + 1;
   try{
-    await cloudPut({version:next, routines:db.routines});
+    await cloudPut({version:next, routines:db.routines, seeds:db.meta.seeds||[]});
     db.meta.cloudVersion = next; db.meta.dirty = false; save();
     setSync("ok"); renderBanners();
   }catch(e){ setSync("error"); }
@@ -627,6 +651,15 @@ function pubUrl(){
 }
 
 async function checkPublished(){
+  /* A device that has ever talked to the cloud must never be overwritten by
+     the static routines.json, which is only ever a stale snapshot. Without
+     this, one failed fetch of sync-config.json would roll the user back. */
+  if(num(db.meta && db.meta.cloudVersion, 0) > 0){
+    setSync("error", "sync-config.json unreachable");
+    $("#syncPill").textContent = "Sync config missing";
+    $("#syncPill").classList.remove("hide");
+    return;
+  }
   let res;
   try{
     res = await fetch(pubUrl(), {cache:"no-store"});
@@ -652,6 +685,7 @@ async function checkPublished(){
 function adopt(p){
   db.routines = p.routines;
   db.meta.pubVersion = num(p.version, 0);
+  db.meta.seeds = Array.isArray(p.seeds) ? p.seeds.slice() : LEGACY_SEEDS.slice();
   db.meta.dirty = false;
   db.routines.forEach(r=>{
     r.id = r.id||uid(); r.emoji = r.emoji||"⏱"; r.name = r.name||"Routine";
@@ -678,7 +712,8 @@ function renderBanners(){
 function publish(){
   const out = {
     version: num(db.meta.pubVersion, 0) + 1,
-    routines: db.routines
+    routines: db.routines,
+    seeds: db.meta.seeds || []
   };
   const blob = new Blob([JSON.stringify(out,null,2)], {type:"application/json"});
   const a = document.createElement("a");
@@ -1321,7 +1356,9 @@ renderBanners();
 (async function boot(){
   const configured = await loadSyncConfig();
   if(configured){ await cloudPull(); }
-  else { checkPublished(); }                  // fall back to the repo-file flow
+  else { await checkPublished(); }            // fall back to the repo-file flow
+  applySeeds();                               // only now is db.routines settled
+  renderBanners();
 })();
 
 /* coming back to the app re-checks the cloud, so a phone left open overnight
